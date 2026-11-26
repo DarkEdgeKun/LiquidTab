@@ -1,0 +1,106 @@
+name: build-ninebot218
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: big-dictator/LiquidTab
+          ref: v2.1.2
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Patch ninebot
+        run: |
+          mkdir -p app/src/main/java/io/github/offlineglass/hook/adapters/ninebot
+          printf '%s\n' \
+          'package io.github.offlineglass.hook.adapters.ninebot' \
+          '' \
+          'import io.github.offlineglass.targets.AdapterSource' \
+          'import io.github.offlineglass.targets.TargetSpec' \
+          '' \
+          'internal val targetSpec: TargetSpec = TargetSpec(' \
+          '    "ninebot", "cn.ninebot.ninebot", "九号出行", AdapterSource.GENERIC_FALLBACK,' \
+          '    activityHints = setOf("cn.ninebot.ninebot.mainshell.MainActivity"),' \
+          '    classHints = setOf("MainActivity", "ConstraintLayout", "FrameLayout"),' \
+          '    textHints = setOf("设备", "发现", "商城", "服务", "我的"),' \
+          '    preferredSlots = 5..5,' \
+          '    entryLabels = listOf("设备", "发现", "商城", "服务", "我的"),' \
+          ')' > app/src/main/java/io/github/offlineglass/hook/adapters/ninebot/TargetSpec.kt
+          python3 - <<'PY'
+          import io
+          p = 'app/src/main/java/io/github/offlineglass/targets/TargetSpecRegistry.kt'
+          s = io.open(p, encoding='utf-8').read()
+          line = '        io.github.offlineglass.hook.adapters.ninebot.targetSpec,'
+          if 'ninebot.targetSpec' not in s:
+              s = s.replace('listOf(', 'listOf(\n' + line, 1)
+              io.open(p, 'w', encoding='utf-8').write(s)
+
+          g = 'app/src/main/java/io/github/offlineglass/hook/GlassInstaller.kt'
+          gs = io.open(g, encoding='utf-8').read()
+          if 'ninebotClearShell' not in gs:
+              anchor = '                parent.background = ColorDrawable(Color.TRANSPARENT)\n'
+              add = '''                // ninebotClearShell: 九号底栏区域单独一层白底，祖先+兄弟都要清
+                if (spec.key == "ninebot") {
+                    runCatching { logBottomHierarchy(navigation, content, "NINEBOT") }
+                    var node: android.view.ViewParent? = navigation.parent
+                    var guard = 0
+                    while (guard++ < 6) {
+                        val v = node as? android.view.View ?: break
+                        if (v === content) break
+                        if (v.height > (400f * density).toInt()) break
+                        v.background = ColorDrawable(Color.TRANSPARENT)
+                        node = v.parent
+                    }
+                    val par = navigation.parent as? android.view.ViewGroup
+                    if (par != null) {
+                        for (i in 0 until par.childCount) {
+                            val sib = par.getChildAt(i)
+                            if (sib === navigation || sib === content) continue
+                            if (sib.height > (400f * density).toInt()) continue
+                            sib.background = ColorDrawable(Color.TRANSPARENT)
+                        }
+                    }
+                }
+          '''
+              idx = gs.find(anchor)
+              if idx < 0:
+                  raise SystemExit('anchor not found')
+              gs = gs[:idx + len(anchor)] + add + gs[idx + len(anchor):]
+              io.open(g, 'w', encoding='utf-8').write(gs)
+          print('patched ok')
+          PY
+          if [ -f app/src/main/assets/xposed_scope ]; then grep -q ninebot app/src/main/assets/xposed_scope || echo "cn.ninebot.ninebot" >> app/src/main/assets/xposed_scope; fi
+
+      - name: Normalize line endings
+        run: |
+          sed -i 's/\r$//' gradlew
+          chmod +x gradlew
+
+      - name: Build release
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace -x lintVitalRelease -x lintVitalAnalyzeRelease -x lintVitalReportRelease 2>&1 | tee build.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiquidTab-ninebot-218
+          path: app/build/outputs/apk/release/*.apk
