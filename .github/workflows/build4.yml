@@ -1,0 +1,79 @@
+name: build-ninebot212
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: big-dictator/LiquidTab
+          ref: v2.1.2
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install SDK components
+        run: |
+          SDKM=$(find "$ANDROID_HOME" -name sdkmanager -type f 2>/dev/null | head -1)
+          if [ -n "$SDKM" ]; then
+            yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+            "$SDKM" "platforms;android-37" "build-tools;37.0.0" "platform-tools" || true
+          fi
+
+      - name: Patch ninebot
+        run: |
+          set -e
+          DIR=app/src/main/java/io/github/offlineglass/hook/adapters/ninebot
+          mkdir -p "$DIR"
+          printf '%s\n' \
+          'package io.github.offlineglass.hook.adapters.ninebot' \
+          '' \
+          'import io.github.offlineglass.targets.AdapterSource' \
+          'import io.github.offlineglass.targets.TargetSpec' \
+          '' \
+          'internal val targetSpec: TargetSpec = TargetSpec(' \
+          '    "ninebot", "cn.ninebot.ninebot", "九号出行", AdapterSource.GENERIC_FALLBACK,' \
+          '    activityHints = setOf(' \
+          '        "cn.ninebot.ninebot.mainshell.MainActivity",' \
+          '        "cn.ninebot.ninebot.mainshell.SplashActivity",' \
+          '    ),' \
+          '    classHints = setOf("MainActivity", "ConstraintLayout", "FrameLayout"),' \
+          '    textHints = setOf("设备", "发现", "商城", "服务", "我的"),' \
+          '    preferredSlots = 5..5,' \
+          '    defaultAccentColor = 0xFF00B4D8.toInt(),' \
+          '    entryLabels = listOf("设备", "发现", "商城", "服务", "我的"),' \
+          ')' > "$DIR/TargetSpec.kt"
+          python3 - <<'PY'
+          import io
+          p = 'app/src/main/java/io/github/offlineglass/targets/TargetSpecRegistry.kt'
+          s = io.open(p, encoding='utf-8').read()
+          line = '        io.github.offlineglass.hook.adapters.ninebot.targetSpec,'
+          if 'ninebot.targetSpec' not in s:
+              s = s.replace('listOf(', 'listOf(\n' + line, 1)
+              io.open(p, 'w', encoding='utf-8').write(s)
+          print('registry patched')
+          PY
+          if [ -f app/src/main/assets/xposed_scope ]; then
+            grep -q ninebot app/src/main/assets/xposed_scope || echo "cn.ninebot.ninebot" >> app/src/main/assets/xposed_scope
+          fi
+          echo "--- target spec ---"
+          head -5 "$DIR/TargetSpec.kt"
+          echo "--- registry ---"
+          grep -n ninebot app/src/main/java/io/github/offlineglass/targets/TargetSpecRegistry.kt
+
+      - name: Build release
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiquidTab-ninebot-212
+          path: app/build/outputs/apk/release/*.apk
