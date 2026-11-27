@@ -1,0 +1,68 @@
+name: nb225
+
+on: workflow_dispatch
+
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: big-dictator/LiquidTab
+          ref: v2.1.2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: patch
+        run: |
+          D=app/src/main/java/io/github/offlineglass
+          mkdir -p $D/hook/adapters/ninebot
+          printf '%s\n' 'package io.github.offlineglass.hook.adapters.ninebot' '' 'import io.github.offlineglass.targets.AdapterSource' 'import io.github.offlineglass.targets.TargetSpec' '' 'internal val targetSpec: TargetSpec = TargetSpec(' '    "ninebot", "cn.ninebot.ninebot", "九号出行", AdapterSource.GENERIC_FALLBACK,' '    activityHints = setOf("cn.ninebot.ninebot.mainshell.MainActivity"),' '    classHints = setOf("MainActivity", "ConstraintLayout", "FrameLayout"),' '    textHints = setOf("设备", "发现", "商城", "服务", "我的"),' '    preferredSlots = 5..5,' '    entryLabels = listOf("设备", "发现", "商城", "服务", "我的"),' ')' > $D/hook/adapters/ninebot/TargetSpec.kt
+          python3 - <<'PY'
+          import io
+          d='app/src/main/java/io/github/offlineglass/'
+          p=d+'targets/TargetSpecRegistry.kt'
+          s=io.open(p,encoding='utf-8').read()
+          if 'ninebot.targetSpec' not in s:
+              s=s.replace('listOf(','listOf(\n        io.github.offlineglass.hook.adapters.ninebot.targetSpec,',1)
+              io.open(p,'w',encoding='utf-8').write(s)
+          g=d+'hook/GlassInstaller.kt'
+          t=io.open(g,encoding='utf-8').read()
+          if 'nbHide' not in t:
+              a='                TargetAdapterRegistry.forSpec(spec)?.suppressNativeBottomChrome(navigation)\n'
+              add='''                // nbHide: 原底栏整个隐藏，玻璃层独立绘制
+                if (spec.key == "ninebot") {
+                    navigation.visibility = android.view.View.INVISIBLE
+                    navigation.alpha = 0f
+                    navigation.background = ColorDrawable(Color.TRANSPARENT)
+                    navigation.backgroundTintList = null
+                }
+          '''
+              i=t.find(a)
+              if i < 0: raise SystemExit('no anchor')
+              t=t[:i+len(a)]+add+t[i+len(a):]
+              io.open(g,'w',encoding='utf-8').write(t)
+          print('ok')
+          PY
+          for f in app/src/main/assets/xposed_scope app/src/main/META-INF/xposed/scope.list; do
+            if [ -f "$f" ]; then grep -q ninebot "$f" || echo cn.ninebot.ninebot >> "$f"; fi
+          done
+      - name: lf
+        run: |
+          sed -i 's/\r$//' gradlew
+          chmod +x gradlew
+      - name: build
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace -x lintVitalRelease -x lintVitalAnalyzeRelease -x lintVitalReportRelease 2>&1 | tee build.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: build.log
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: nb225
+          path: app/build/outputs/apk/release/*.apk
