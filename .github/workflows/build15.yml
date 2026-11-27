@@ -1,0 +1,99 @@
+name: nb223
+
+on: workflow_dispatch
+
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: big-dictator/LiquidTab
+          ref: v2.1.2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: patch
+        run: |
+          D=app/src/main/java/io/github/offlineglass
+          mkdir -p $D/hook/adapters/ninebot
+          printf '%s\n' 'package io.github.offlineglass.hook.adapters.ninebot' '' 'import io.github.offlineglass.targets.AdapterSource' 'import io.github.offlineglass.targets.TargetSpec' '' 'internal val targetSpec: TargetSpec = TargetSpec(' '    "ninebot", "cn.ninebot.ninebot", "九号出行", AdapterSource.GENERIC_FALLBACK,' '    activityHints = setOf("cn.ninebot.ninebot.mainshell.MainActivity"),' '    classHints = setOf("MainActivity", "ConstraintLayout", "FrameLayout"),' '    textHints = setOf("设备", "发现", "商城", "服务", "我的"),' '    preferredSlots = 5..5,' '    entryLabels = listOf("设备", "发现", "商城", "服务", "我的"),' ')' > $D/hook/adapters/ninebot/TargetSpec.kt
+          python3 - <<'PY'
+          import io
+          d='app/src/main/java/io/github/offlineglass/'
+          p=d+'targets/TargetSpecRegistry.kt'
+          s=io.open(p,encoding='utf-8').read()
+          if 'ninebot.targetSpec' not in s:
+              s=s.replace('listOf(','listOf(\n        io.github.offlineglass.hook.adapters.ninebot.targetSpec,',1)
+              io.open(p,'w',encoding='utf-8').write(s)
+          g=d+'hook/GlassInstaller.kt'
+          t=io.open(g,encoding='utf-8').read()
+          if 'nbAnyBg' not in t:
+              a='                TargetAdapterRegistry.forSpec(spec)?.suppressNativeBottomChrome(navigation)\n'
+              add='''                // nbAnyBg: 底部区域宽容器，不管背景类型一律清
+                if (spec.key == "ninebot") {
+                    runCatching { logBottomHierarchy(navigation, content, "NINEBOT") }
+                    navigation.background = ColorDrawable(Color.TRANSPARENT)
+                    navigation.backgroundTintList = null
+                    val cw = content.width.coerceAtLeast(1)
+                    val ch = content.height.coerceAtLeast(1)
+                    val topLimit = ch - (320f * density).toInt()
+                    val st = ArrayDeque<android.view.View>()
+                    (content as? android.view.ViewGroup)?.let { cg ->
+                        for (i in 0 until cg.childCount) st += cg.getChildAt(i)
+                    }
+                    val hits = ArrayList<String>()
+                    while (st.isNotEmpty()) {
+                        val v = st.removeLast()
+                        if (v !== content) {
+                            val loc = IntArray(2)
+                            runCatching { v.getLocationOnScreen(loc) }
+                            val bg = v.background
+                            if (loc[1] >= topLimit && v.width >= cw * 0.8f && bg != null) {
+                                val bn = bg.javaClass.simpleName
+                                v.background = ColorDrawable(Color.TRANSPARENT)
+                                v.backgroundTintList = null
+                                if (hits.size < 12) {
+                                    hits.add(v.javaClass.simpleName + "/" + bn +
+                                        ":" + v.width + "x" + v.height)
+                                }
+                            }
+                        }
+                        if (v is android.view.ViewGroup) {
+                            for (i in 0 until v.childCount) st += v.getChildAt(i)
+                        }
+                    }
+                    runCatching {
+                        logBottomHierarchy(navigation, content,
+                            "NB_ANYSURF_" + hits.size + "_" + hits.joinToString("|").take(400))
+                    }
+                }
+          '''
+              i=t.find(a)
+              if i < 0: raise SystemExit('no anchor')
+              t=t[:i+len(a)]+add+t[i+len(a):]
+              io.open(g,'w',encoding='utf-8').write(t)
+          print('ok')
+          PY
+          for f in app/src/main/assets/xposed_scope app/src/main/META-INF/xposed/scope.list; do
+            if [ -f "$f" ]; then grep -q ninebot "$f" || echo cn.ninebot.ninebot >> "$f"; fi
+          done
+      - name: lf
+        run: |
+          sed -i 's/\r$//' gradlew
+          chmod +x gradlew
+      - name: build
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace -x lintVitalRelease -x lintVitalAnalyzeRelease -x lintVitalReportRelease 2>&1 | tee build.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: build.log
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: nb223
+          path: app/build/outputs/apk/release/*.apk
